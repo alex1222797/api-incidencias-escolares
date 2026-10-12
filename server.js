@@ -206,6 +206,102 @@ app.get("/incidencias", (req, res) => {
 
 /*
 |--------------------------------------------------------------------------
+| OBTENER INCIDENCIAS RESUELTAS (Guía 4)
+|--------------------------------------------------------------------------
+| Método: GET
+| Ruta: /incidencias/resueltas
+|--------------------------------------------------------------------------
+*/
+
+app.get("/incidencias/resueltas", (req, res) => {
+  const sql = `
+    SELECT i.id, i.descripcion, i.estado, i.fecha, i.imagen,
+           c.nombre AS categoria
+    FROM incidencias i
+    JOIN categorias c ON i.categoria_id = c.id
+    WHERE i.estado = 'Resuelto'
+    ORDER BY i.fecha DESC
+  `;
+
+  conexion.query(sql, (error, resultados) => {
+    if (error) {
+      console.error("Error al obtener resueltas:", error.message);
+
+      return res.status(500).json({
+        status: "error",
+        mensaje: "No se pudieron obtener las incidencias resueltas",
+      });
+    }
+
+    res.status(200).json({
+      status: "ok",
+      incidencias: resultados,
+    });
+  });
+});
+
+/*
+|--------------------------------------------------------------------------
+| CAMBIAR ESTADO DE UNA INCIDENCIA (Guía 4)
+|--------------------------------------------------------------------------
+| Método: PUT
+| Ruta: /incidencias/:id/estado
+|
+| JSON esperado:
+| {
+|   "estado": "Resuelto"
+| }
+|--------------------------------------------------------------------------
+*/
+
+app.put("/incidencias/:id/estado", (req, res) => {
+  const incidenciaId = Number(req.params.id);
+  const estado = typeof req.body.estado === "string" ? req.body.estado : "";
+
+  const estadosPermitidos = ["Pendiente", "Resuelto"];
+
+  if (!Number.isInteger(incidenciaId) || incidenciaId <= 0) {
+    return res.status(400).json({
+      status: "error",
+      mensaje: "El id de la incidencia no es válido",
+    });
+  }
+
+  if (!estadosPermitidos.includes(estado)) {
+    return res.status(400).json({
+      status: "error",
+      mensaje: "El estado debe ser Pendiente o Resuelto",
+    });
+  }
+
+  const sql = "UPDATE incidencias SET estado = ? WHERE id = ?";
+
+  conexion.query(sql, [estado, incidenciaId], (error, resultado) => {
+    if (error) {
+      console.error("Error al cambiar estado:", error.message);
+
+      return res.status(500).json({
+        status: "error",
+        mensaje: "No se pudo actualizar el estado",
+      });
+    }
+
+    if (resultado.affectedRows === 0) {
+      return res.status(404).json({
+        status: "error",
+        mensaje: "La incidencia no existe",
+      });
+    }
+
+    res.status(200).json({
+      status: "ok",
+      mensaje: "Estado actualizado correctamente",
+    });
+  });
+});
+
+/*
+|--------------------------------------------------------------------------
 | ESTADÍSTICAS POR CATEGORÍA
 |--------------------------------------------------------------------------
 | Método: GET
