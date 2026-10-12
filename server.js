@@ -6,10 +6,6 @@ const path = require("path");
 const fs = require("fs");
 const multer = require("multer");
 require("dotenv").config();
-const express = require("express");
-const mysql = require("mysql2");
-const cors = require("cors");
-require("dotenv").config();
 
 // Crear la aplicación de Express.
 const app = express();
@@ -19,6 +15,7 @@ app.use(cors());
 
 // Permitir que Express reciba información JSON.
 app.use(express.json());
+
 // Carpeta de imágenes (se crea sola si no existe, importante en Render)
 const carpetaUploads = path.join(__dirname, "uploads");
 if (!fs.existsSync(carpetaUploads)) {
@@ -27,6 +24,7 @@ if (!fs.existsSync(carpetaUploads)) {
 
 // Servir las imágenes públicamente: /uploads/archivo.jpg
 app.use("/uploads", express.static(carpetaUploads));
+
 /*
 |--------------------------------------------------------------------------
 | CONEXIÓN CON MYSQL EN AIVEN
@@ -71,6 +69,12 @@ conexion.getConnection((error, connection) => {
   // Liberar la conexión para que vuelva al pool.
   connection.release();
 });
+
+/*
+|--------------------------------------------------------------------------
+| CONFIGURACIÓN DE MULTER (SUBIDA DE IMÁGENES)
+|--------------------------------------------------------------------------
+*/
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, carpetaUploads),
@@ -121,10 +125,7 @@ app.get("/categorias", (req, res) => {
 
   conexion.query(sql, (error, resultados) => {
     if (error) {
-      console.error(
-        "Error al obtener categorías:",
-        error.message
-      );
+      console.error("Error al obtener categorías:", error.message);
 
       return res.status(500).json({
         status: "error",
@@ -140,9 +141,14 @@ app.get("/categorias", (req, res) => {
 });
 
 /*
+|--------------------------------------------------------------------------
 | OBTENER INCIDENCIAS
-| Método: GET  |  Ruta: /incidencias
+|--------------------------------------------------------------------------
+| Método: GET
+| Ruta: /incidencias
+|--------------------------------------------------------------------------
 */
+
 app.get("/incidencias", (req, res) => {
   const sql = `
     SELECT i.id, i.descripcion, i.estado, i.fecha, i.imagen,
@@ -155,13 +161,17 @@ app.get("/incidencias", (req, res) => {
   conexion.query(sql, (error, resultados) => {
     if (error) {
       console.error("Error al obtener incidencias:", error.message);
+
       return res.status(500).json({
         status: "error",
         mensaje: "No se pudieron obtener las incidencias",
       });
     }
 
-    res.status(200).json({ status: "ok", incidencias: resultados });
+    res.status(200).json({
+      status: "ok",
+      incidencias: resultados,
+    });
   });
 });
 
@@ -172,11 +182,10 @@ app.get("/incidencias", (req, res) => {
 | Método: POST
 | Ruta: /incidencias
 |
-| JSON esperado:
-| {
-|   "categoria_id": 2,
-|   "descripcion": "Ventilador del aula 5 no funciona"
-| }
+| Se recibe como multipart/form-data:
+|   categoria_id: 2
+|   descripcion: "Ventilador del aula 5 no funciona"
+|   imagen: (archivo opcional)
 |--------------------------------------------------------------------------
 */
 
@@ -189,22 +198,18 @@ app.post("/incidencias", upload.single("imagen"), (req, res) => {
 
   // Limpiar espacios innecesarios.
   const descripcionLimpia =
-    typeof descripcion === "string"
-      ? descripcion.trim()
-      : "";
+    typeof descripcion === "string" ? descripcion.trim() : "";
 
-    // Nombre del archivo si el usuario mandó foto.
+  // Nombre del archivo si el usuario mandó foto.
   const imagen = req.file ? req.file.filename : null;
+
   /*
   |--------------------------------------------------------------------------
   | VALIDACIONES
   |--------------------------------------------------------------------------
   */
 
-  if (
-    !Number.isInteger(categoriaId) ||
-    categoriaId <= 0
-  ) {
+  if (!Number.isInteger(categoriaId) || categoriaId <= 0) {
     return res.status(400).json({
       status: "error",
       mensaje: "Debe seleccionar una categoría válida",
@@ -221,16 +226,14 @@ app.post("/incidencias", upload.single("imagen"), (req, res) => {
   if (descripcionLimpia.length < 10) {
     return res.status(400).json({
       status: "error",
-      mensaje:
-        "La descripción debe tener al menos 10 caracteres",
+      mensaje: "La descripción debe tener al menos 10 caracteres",
     });
   }
 
   if (descripcionLimpia.length > 1000) {
     return res.status(400).json({
       status: "error",
-      mensaje:
-        "La descripción no puede superar los 1000 caracteres",
+      mensaje: "La descripción no puede superar los 1000 caracteres",
     });
   }
 
@@ -240,7 +243,7 @@ app.post("/incidencias", upload.single("imagen"), (req, res) => {
   |--------------------------------------------------------------------------
   */
 
-    const sql = `
+  const sql = `
     INSERT INTO incidencias (
       categoria_id,
       descripcion,
@@ -252,35 +255,28 @@ app.post("/incidencias", upload.single("imagen"), (req, res) => {
   conexion.query(
     sql,
     [categoriaId, descripcionLimpia, imagen],
-    (error, resultado) =>  {
+    (error, resultado) => {
       if (error) {
-        console.error(
-          "Error al registrar incidencia:",
-          error.message
-        );
+        console.error("Error al registrar incidencia:", error.message);
 
         // La categoría enviada no existe.
         if (error.code === "ER_NO_REFERENCED_ROW_2") {
           return res.status(400).json({
             status: "error",
-            mensaje:
-              "La categoría seleccionada no existe",
+            mensaje: "La categoría seleccionada no existe",
           });
         }
 
         return res.status(500).json({
           status: "error",
-          mensaje:
-            "No se pudo registrar la incidencia",
+          mensaje: "No se pudo registrar la incidencia",
         });
       }
 
       res.status(201).json({
         status: "ok",
-        mensaje:
-          "Incidencia registrada correctamente",
+        mensaje: "Incidencia registrada correctamente",
         incidencia: {
-          
           id: resultado.insertId,
           categoria_id: categoriaId,
           descripcion: descripcionLimpia,
@@ -292,8 +288,12 @@ app.post("/incidencias", upload.single("imagen"), (req, res) => {
   );
 });
 
+/*
+|--------------------------------------------------------------------------
+| ERRORES DE SUBIDA DE ARCHIVOS (tamaño, tipo)
+|--------------------------------------------------------------------------
+*/
 
-// Errores de subida de archivos (tamaño, tipo)
 app.use((error, req, res, next) => {
   if (
     error instanceof multer.MulterError ||
@@ -309,6 +309,7 @@ app.use((error, req, res, next) => {
   }
   next(error);
 });
+
 /*
 |--------------------------------------------------------------------------
 | RUTA NO ENCONTRADA
