@@ -2,6 +2,13 @@
 const express = require("express");
 const mysql = require("mysql2");
 const cors = require("cors");
+const path = require("path");
+const fs = require("fs");
+const multer = require("multer");
+require("dotenv").config();
+const express = require("express");
+const mysql = require("mysql2");
+const cors = require("cors");
 require("dotenv").config();
 
 // Crear la aplicación de Express.
@@ -12,7 +19,14 @@ app.use(cors());
 
 // Permitir que Express reciba información JSON.
 app.use(express.json());
+// Carpeta de imágenes (se crea sola si no existe, importante en Render)
+const carpetaUploads = path.join(__dirname, "uploads");
+if (!fs.existsSync(carpetaUploads)) {
+  fs.mkdirSync(carpetaUploads, { recursive: true });
+}
 
+// Servir las imágenes públicamente: /uploads/archivo.jpg
+app.use("/uploads", express.static(carpetaUploads));
 /*
 |--------------------------------------------------------------------------
 | CONEXIÓN CON MYSQL EN AIVEN
@@ -56,6 +70,22 @@ conexion.getConnection((error, connection) => {
 
   // Liberar la conexión para que vuelva al pool.
   connection.release();
+});
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, carpetaUploads),
+  filename: (req, file, cb) => {
+    cb(null, Date.now() + path.extname(file.originalname).toLowerCase());
+  },
+});
+
+const upload = multer({
+  storage,
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith("image/")) cb(null, true);
+    else cb(new Error("Solo se permiten imágenes"));
+  },
 });
 
 /*
@@ -110,6 +140,32 @@ app.get("/categorias", (req, res) => {
 });
 
 /*
+| OBTENER INCIDENCIAS
+| Método: GET  |  Ruta: /incidencias
+*/
+app.get("/incidencias", (req, res) => {
+  const sql = `
+    SELECT i.id, i.descripcion, i.estado, i.fecha, i.imagen,
+           c.nombre AS categoria
+    FROM incidencias i
+    JOIN categorias c ON i.categoria_id = c.id
+    ORDER BY i.fecha DESC
+  `;
+
+  conexion.query(sql, (error, resultados) => {
+    if (error) {
+      console.error("Error al obtener incidencias:", error.message);
+      return res.status(500).json({
+        status: "error",
+        mensaje: "No se pudieron obtener las incidencias",
+      });
+    }
+
+    res.status(200).json({ status: "ok", incidencias: resultados });
+  });
+});
+
+/*
 |--------------------------------------------------------------------------
 | REGISTRAR UNA INCIDENCIA
 |--------------------------------------------------------------------------
@@ -124,7 +180,7 @@ app.get("/categorias", (req, res) => {
 |--------------------------------------------------------------------------
 */
 
-app.post("/incidencias", (req, res) => {
+app.post("/incidencias", upload.single("imagen"), (req, res) => {
   // Obtener la información enviada desde Flutter.
   const { categoria_id, descripcion } = req.body;
 
@@ -137,6 +193,8 @@ app.post("/incidencias", (req, res) => {
       ? descripcion.trim()
       : "";
 
+    // Nombre del archivo si el usuario mandó foto.
+  const imagen = req.file ? req.file.filename : null;
   /*
   |--------------------------------------------------------------------------
   | VALIDACIONES
@@ -182,18 +240,19 @@ app.post("/incidencias", (req, res) => {
   |--------------------------------------------------------------------------
   */
 
-  const sql = `
+    const sql = `
     INSERT INTO incidencias (
       categoria_id,
-      descripcion
+      descripcion,
+      imagen
     )
-    VALUES (?, ?)
+    VALUES (?, ?, ?)
   `;
 
   conexion.query(
     sql,
-    [categoriaId, descripcionLimpia],
-    (error, resultado) => {
+    [categoriaId, descripcionLimpia, imagen],
+    (error, resultado) =>  {
       if (error) {
         console.error(
           "Error al registrar incidencia:",
@@ -221,9 +280,11 @@ app.post("/incidencias", (req, res) => {
         mensaje:
           "Incidencia registrada correctamente",
         incidencia: {
+          
           id: resultado.insertId,
           categoria_id: categoriaId,
           descripcion: descripcionLimpia,
+          imagen: imagen,
           estado: "Pendiente",
         },
       });
@@ -231,6 +292,23 @@ app.post("/incidencias", (req, res) => {
   );
 });
 
+
+// Errores de subida de archivos (tamaño, tipo)
+app.use((error, req, res, next) => {
+  if (
+    error instanceof multer.MulterError ||
+    error.message === "Solo se permiten imágenes"
+  ) {
+    return res.status(400).json({
+      status: "error",
+      mensaje:
+        error.code === "LIMIT_FILE_SIZE"
+          ? "La imagen no puede superar los 5 MB"
+          : error.message,
+    });
+  }
+  next(error);
+});
 /*
 |--------------------------------------------------------------------------
 | RUTA NO ENCONTRADA
