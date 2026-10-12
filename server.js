@@ -3,7 +3,6 @@ const express = require("express");
 const mysql = require("mysql2");
 const cors = require("cors");
 const path = require("path");
-const fs = require("fs");
 const multer = require("multer");
 require("dotenv").config();
 
@@ -15,15 +14,6 @@ app.use(cors());
 
 // Permitir que Express reciba información JSON.
 app.use(express.json());
-
-// Carpeta de imágenes (se crea sola si no existe, importante en Render)
-const carpetaUploads = path.join(__dirname, "uploads");
-if (!fs.existsSync(carpetaUploads)) {
-  fs.mkdirSync(carpetaUploads, { recursive: true });
-}
-
-// Servir las imágenes públicamente: /uploads/archivo.jpg
-app.use("/uploads", express.static(carpetaUploads));
 
 /*
 |--------------------------------------------------------------------------
@@ -74,34 +64,25 @@ conexion.getConnection((error, connection) => {
 |--------------------------------------------------------------------------
 | CONFIGURACIÓN DE MULTER (SUBIDA DE IMÁGENES)
 |--------------------------------------------------------------------------
+| Las imágenes se reciben en memoria y se guardan en la tabla `imagenes`
+| de MySQL, así no se pierden cuando Render reinicia el servidor.
+|--------------------------------------------------------------------------
 */
 
-const EXTENSIONES_PERMITIDAS = [
-  ".jpg",
-  ".jpeg",
-  ".png",
-  ".webp",
-  ".gif",
-  ".heic",
-  ".heif",
-];
+const TIPOS_POR_EXTENSION = {
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".png": "image/png",
+  ".webp": "image/webp",
+  ".gif": "image/gif",
+  ".heic": "image/heic",
+  ".heif": "image/heif",
+};
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, carpetaUploads),
-  filename: (req, file, cb) => {
-    let extension = path.extname(file.originalname).toLowerCase();
-
-    // Algunos celulares envían la foto sin extensión: usamos .jpg.
-    if (!EXTENSIONES_PERMITIDAS.includes(extension)) {
-      extension = ".jpg";
-    }
-
-    cb(null, Date.now() + extension);
-  },
-});
+const EXTENSIONES_PERMITIDAS = Object.keys(TIPOS_POR_EXTENSION);
 
 const upload = multer({
-  storage,
+  storage: multer.memoryStorage(),
   limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB
   fileFilter: (req, file, cb) => {
     const extension = path.extname(file.originalname).toLowerCase();
@@ -133,6 +114,43 @@ app.get("/", (req, res) => {
   res.status(200).json({
     status: "ok",
     mensaje: "API de incidencias funcionando correctamente",
+  });
+});
+
+/*
+|--------------------------------------------------------------------------
+| SERVIR IMÁGENES DESDE MYSQL
+|--------------------------------------------------------------------------
+| Método: GET
+| Ruta: /uploads/:nombre
+|--------------------------------------------------------------------------
+*/
+
+app.get("/uploads/:nombre", (req, res) => {
+  const nombre = path.basename(req.params.nombre);
+
+  const sql = "SELECT tipo, datos FROM imagenes WHERE nombre = ?";
+
+  conexion.query(sql, [nombre], (error, filas) => {
+    if (error) {
+      console.error("Error al obtener imagen:", error.message);
+
+      return res.status(500).json({
+        status: "error",
+        mensaje: "No se pudo obtener la imagen",
+      });
+    }
+
+    if (filas.length === 0) {
+      return res.status(404).json({
+        status: "error",
+        mensaje: "Imagen no encontrada",
+      });
+    }
+
+    res.set("Content-Type", filas[0].tipo);
+    res.set("Cache-Control", "public, max-age=86400");
+    res.status(200).send(filas[0].datos);
   });
 });
 
@@ -302,7 +320,92 @@ app.put("/incidencias/:id/estado", (req, res) => {
 
 /*
 |--------------------------------------------------------------------------
-| ESTADÍSTICAS POR CATEGORÍA
+| ELIMINAR UNA INCIDENCIA (Guía 5)
+|--------------------------------------------------------------------------
+| Método: DELETE
+| Ruta: /incidencias/:id
+| También elimina su imagen guardada en la tabla `imagenes`.
+|--------------------------------------------------------------------------
+*/
+
+app.delete("/incidencias/:id", (req, res) => {
+  const incidenciaId = Number(req.params.id);
+
+  if (!Number.isInteger(incidenciaId) || incidenciaId <= 0) {
+    return res.status(400).json({
+      status: "error",
+      mensaje: "El id de la incidencia no es válido",
+    });
+  }
+
+  // Primero obtenemos el nombre de la imagen (si tiene).
+  conexion.query(
+    "SELECT imagen FROM incidencias WHERE id = ?",
+    [incidenciaId],
+    (errorBuscar, filas) => {
+      if (errorBuscar) {
+        console.error("Error al buscar incidencia:", errorBuscar.message);
+
+        return res.status(500).json({
+          status: "error",
+          mensaje: "No se pudo eliminar la incidencia",
+        });
+      }
+
+      if (filas.length === 0) {
+        return res.status(404).json({
+          status: "error",
+          mensaje: "La incidencia no existe",
+        });
+      }
+
+      const nombreImagen = filas[0].imagen;
+
+      conexion.query(
+        "DELETE FROM incidencias WHERE id = ?",
+        [incidenciaId],
+        (errorEliminar) => {
+          if (errorEliminar) {
+            console.error(
+              "Error al eliminar incidencia:",
+              errorEliminar.message
+            );
+
+            return res.status(500).json({
+              status: "error",
+              mensaje: "No se pudo eliminar la incidencia",
+            });
+          }
+
+          // Eliminamos también la imagen guardada.
+          if (nombreImagen) {
+            conexion.query(
+              "DELETE FROM imagenes WHERE nombre = ?",
+              [nombreImagen],
+              (errorImagen) => {
+                if (errorImagen) {
+                  console.error(
+                    "Error al eliminar imagen:",
+                    errorImagen.message
+                  );
+                }
+              }
+            );
+          }
+
+          res.status(200).json({
+            status: "ok",
+            mensaje: "Incidencia eliminada correctamente",
+          });
+        }
+      );
+    }
+  );
+});
+
+/*
+|--------------------------------------------------------------------------
+| ESTADÍSTICAS POR CATEGORÍA (Guía 3)
 |--------------------------------------------------------------------------
 | Método: GET
 | Ruta: /estadisticas/categorias
@@ -337,7 +440,7 @@ app.get("/estadisticas/categorias", (req, res) => {
 
 /*
 |--------------------------------------------------------------------------
-| ESTADÍSTICAS POR ESTADO (Pendiente vs Resuelto)
+| ESTADÍSTICAS POR ESTADO (Guía 3)
 |--------------------------------------------------------------------------
 | Método: GET
 | Ruta: /estadisticas/estados
@@ -393,9 +496,6 @@ app.post("/incidencias", upload.single("imagen"), (req, res) => {
   const descripcionLimpia =
     typeof descripcion === "string" ? descripcion.trim() : "";
 
-  // Nombre del archivo si el usuario mandó foto.
-  const imagen = req.file ? req.file.filename : null;
-
   /*
   |--------------------------------------------------------------------------
   | VALIDACIONES
@@ -432,51 +532,109 @@ app.post("/incidencias", upload.single("imagen"), (req, res) => {
 
   /*
   |--------------------------------------------------------------------------
+  | PREPARAR LA IMAGEN (si el usuario mandó foto)
+  |--------------------------------------------------------------------------
+  */
+
+  let nombreImagen = null;
+  let tipoImagen = null;
+
+  if (req.file) {
+    let extension = path.extname(req.file.originalname).toLowerCase();
+
+    // Algunos celulares envían la foto sin extensión: usamos .jpg.
+    if (!EXTENSIONES_PERMITIDAS.includes(extension)) {
+      extension = ".jpg";
+    }
+
+    nombreImagen = `${Date.now()}${extension}`;
+
+    tipoImagen = req.file.mimetype.startsWith("image/")
+      ? req.file.mimetype
+      : TIPOS_POR_EXTENSION[extension];
+  }
+
+  /*
+  |--------------------------------------------------------------------------
   | GUARDAR LA INCIDENCIA
   |--------------------------------------------------------------------------
   */
 
-  const sql = `
-    INSERT INTO incidencias (
-      categoria_id,
-      descripcion,
-      imagen
-    )
-    VALUES (?, ?, ?)
-  `;
+  const guardarIncidencia = () => {
+    const sql = `
+      INSERT INTO incidencias (
+        categoria_id,
+        descripcion,
+        imagen
+      )
+      VALUES (?, ?, ?)
+    `;
 
-  conexion.query(
-    sql,
-    [categoriaId, descripcionLimpia, imagen],
-    (error, resultado) => {
-      if (error) {
-        console.error("Error al registrar incidencia:", error.message);
+    conexion.query(
+      sql,
+      [categoriaId, descripcionLimpia, nombreImagen],
+      (error, resultado) => {
+        if (error) {
+          console.error("Error al registrar incidencia:", error.message);
 
-        // La categoría enviada no existe.
-        if (error.code === "ER_NO_REFERENCED_ROW_2") {
-          return res.status(400).json({
+          // Si falló, borramos la imagen que ya se había guardado.
+          if (nombreImagen) {
+            conexion.query(
+              "DELETE FROM imagenes WHERE nombre = ?",
+              [nombreImagen],
+              () => {}
+            );
+          }
+
+          // La categoría enviada no existe.
+          if (error.code === "ER_NO_REFERENCED_ROW_2") {
+            return res.status(400).json({
+              status: "error",
+              mensaje: "La categoría seleccionada no existe",
+            });
+          }
+
+          return res.status(500).json({
             status: "error",
-            mensaje: "La categoría seleccionada no existe",
+            mensaje: "No se pudo registrar la incidencia",
           });
         }
 
+        res.status(201).json({
+          status: "ok",
+          mensaje: "Incidencia registrada correctamente",
+          incidencia: {
+            id: resultado.insertId,
+            categoria_id: categoriaId,
+            descripcion: descripcionLimpia,
+            imagen: nombreImagen,
+            estado: "Pendiente",
+          },
+        });
+      }
+    );
+  };
+
+  // Sin foto: guardamos directamente la incidencia.
+  if (!req.file) {
+    return guardarIncidencia();
+  }
+
+  // Con foto: primero guardamos la imagen en MySQL.
+  conexion.query(
+    "INSERT INTO imagenes (nombre, tipo, datos) VALUES (?, ?, ?)",
+    [nombreImagen, tipoImagen, req.file.buffer],
+    (errorImagen) => {
+      if (errorImagen) {
+        console.error("Error al guardar imagen:", errorImagen.message);
+
         return res.status(500).json({
           status: "error",
-          mensaje: "No se pudo registrar la incidencia",
+          mensaje: "No se pudo guardar la imagen",
         });
       }
 
-      res.status(201).json({
-        status: "ok",
-        mensaje: "Incidencia registrada correctamente",
-        incidencia: {
-          id: resultado.insertId,
-          categoria_id: categoriaId,
-          descripcion: descripcionLimpia,
-          imagen: imagen,
-          estado: "Pendiente",
-        },
-      });
+      guardarIncidencia();
     }
   );
 });
