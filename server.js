@@ -76,10 +76,27 @@ conexion.getConnection((error, connection) => {
 |--------------------------------------------------------------------------
 */
 
+const EXTENSIONES_PERMITIDAS = [
+  ".jpg",
+  ".jpeg",
+  ".png",
+  ".webp",
+  ".gif",
+  ".heic",
+  ".heif",
+];
+
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, carpetaUploads),
   filename: (req, file, cb) => {
-    cb(null, Date.now() + path.extname(file.originalname).toLowerCase());
+    let extension = path.extname(file.originalname).toLowerCase();
+
+    // Algunos celulares envían la foto sin extensión: usamos .jpg.
+    if (!EXTENSIONES_PERMITIDAS.includes(extension)) {
+      extension = ".jpg";
+    }
+
+    cb(null, Date.now() + extension);
   },
 });
 
@@ -87,8 +104,20 @@ const upload = multer({
   storage,
   limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB
   fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith("image/")) cb(null, true);
-    else cb(new Error("Solo se permiten imágenes"));
+    const extension = path.extname(file.originalname).toLowerCase();
+
+    const esImagenPorTipo = file.mimetype.startsWith("image/");
+
+    // Algunos celulares envían la foto como application/octet-stream.
+    const esGenerico =
+      file.mimetype === "application/octet-stream" &&
+      (extension === "" || EXTENSIONES_PERMITIDAS.includes(extension));
+
+    if (esImagenPorTipo || esGenerico) {
+      cb(null, true);
+    } else {
+      cb(new Error("Solo se permiten imágenes"));
+    }
   },
 });
 
@@ -171,6 +200,74 @@ app.get("/incidencias", (req, res) => {
     res.status(200).json({
       status: "ok",
       incidencias: resultados,
+    });
+  });
+});
+
+/*
+|--------------------------------------------------------------------------
+| ESTADÍSTICAS POR CATEGORÍA
+|--------------------------------------------------------------------------
+| Método: GET
+| Ruta: /estadisticas/categorias
+|--------------------------------------------------------------------------
+*/
+
+app.get("/estadisticas/categorias", (req, res) => {
+  const sql = `
+    SELECT c.nombre AS categoria, COUNT(i.id) AS total
+    FROM categorias c
+    LEFT JOIN incidencias i ON c.id = i.categoria_id
+    GROUP BY c.id, c.nombre
+    ORDER BY c.nombre ASC
+  `;
+
+  conexion.query(sql, (error, resultados) => {
+    if (error) {
+      console.error("Error en estadísticas por categoría:", error.message);
+
+      return res.status(500).json({
+        status: "error",
+        mensaje: "No se pudieron obtener las estadísticas por categoría",
+      });
+    }
+
+    res.status(200).json({
+      status: "ok",
+      estadisticas: resultados,
+    });
+  });
+});
+
+/*
+|--------------------------------------------------------------------------
+| ESTADÍSTICAS POR ESTADO (Pendiente vs Resuelto)
+|--------------------------------------------------------------------------
+| Método: GET
+| Ruta: /estadisticas/estados
+|--------------------------------------------------------------------------
+*/
+
+app.get("/estadisticas/estados", (req, res) => {
+  const sql = `
+    SELECT estado, COUNT(id) AS total
+    FROM incidencias
+    GROUP BY estado
+  `;
+
+  conexion.query(sql, (error, resultados) => {
+    if (error) {
+      console.error("Error en estadísticas por estado:", error.message);
+
+      return res.status(500).json({
+        status: "error",
+        mensaje: "No se pudieron obtener las estadísticas por estado",
+      });
+    }
+
+    res.status(200).json({
+      status: "ok",
+      estadisticas: resultados,
     });
   });
 });
