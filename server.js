@@ -4,7 +4,17 @@ const mysql = require("mysql2");
 const cors = require("cors");
 const path = require("path");
 const multer = require("multer");
+const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
 require("dotenv").config();
+
+// Clave secreta para firmar los tokens (se define en Render, no en el código).
+const JWT_SECRET = process.env.JWT_SECRET;
+
+if (!JWT_SECRET) {
+  console.error("Falta la variable de entorno JWT_SECRET.");
+  process.exit(1);
+}
 
 // Crear la aplicación de Express.
 const app = express();
@@ -104,6 +114,222 @@ const upload = multer({
 
 /*
 |--------------------------------------------------------------------------
+| MIDDLEWARES DE SEGURIDAD (Guía 6)
+|--------------------------------------------------------------------------
+*/
+
+// Verifica que la petición traiga un token JWT válido.
+const verificarToken = (req, res, next) => {
+  const cabecera = req.headers["authorization"] || "";
+  const token = cabecera.startsWith("Bearer ")
+    ? cabecera.slice(7)
+    : cabecera;
+
+  if (!token) {
+    return res.status(403).json({
+      status: "error",
+      mensaje: "Token requerido",
+    });
+  }
+
+  try {
+    req.usuario = jwt.verify(token, JWT_SECRET);
+    next();
+  } catch (error) {
+    return res.status(401).json({
+      status: "error",
+      mensaje: "Token inválido o expirado",
+    });
+  }
+};
+
+// Permite continuar solo a usuarios con rol Admin.
+// El rol se consulta en la base de datos, no solo en el token.
+const soloAdmin = (req, res, next) => {
+  conexion.query(
+    "SELECT rol FROM usuarios WHERE id = ?",
+    [req.usuario.id],
+    (error, filas) => {
+      if (error) {
+        console.error("Error al verificar rol:", error.message);
+
+        return res.status(500).json({
+          status: "error",
+          mensaje: "No se pudo verificar el rol del usuario",
+        });
+      }
+
+      if (filas.length === 0 || filas[0].rol !== "Admin") {
+        return res.status(403).json({
+          status: "error",
+          mensaje: "Acceso denegado. Se requieren permisos de Administrador.",
+        });
+      }
+
+      next();
+    }
+  );
+};
+
+/*
+|--------------------------------------------------------------------------
+| REGISTRO DE USUARIO (Guía 6)
+|--------------------------------------------------------------------------
+| Método: POST
+| Ruta: /registro
+| Todos los usuarios nuevos se crean con rol "Usuario".
+| Para crear un Admin se cambia el rol directamente en la base de datos.
+|--------------------------------------------------------------------------
+*/
+
+app.post("/registro", async (req, res) => {
+  const nombre =
+    typeof req.body.nombre === "string" ? req.body.nombre.trim() : "";
+  const email =
+    typeof req.body.email === "string"
+      ? req.body.email.trim().toLowerCase()
+      : "";
+  const password =
+    typeof req.body.password === "string" ? req.body.password : "";
+
+  if (nombre.length < 2 || nombre.length > 100) {
+    return res.status(400).json({
+      status: "error",
+      mensaje: "El nombre debe tener entre 2 y 100 caracteres",
+    });
+  }
+
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 100) {
+    return res.status(400).json({
+      status: "error",
+      mensaje: "Ingrese un correo electrónico válido",
+    });
+  }
+
+  if (password.length < 6) {
+    return res.status(400).json({
+      status: "error",
+      mensaje: "La contraseña debe tener al menos 6 caracteres",
+    });
+  }
+
+  try {
+    const passwordCifrada = await bcrypt.hash(password, 10);
+
+    const sql =
+      "INSERT INTO usuarios (nombre, email, password, rol) VALUES (?, ?, ?, 'Usuario')";
+
+    conexion.query(sql, [nombre, email, passwordCifrada], (error) => {
+      if (error) {
+        if (error.code === "ER_DUP_ENTRY") {
+          return res.status(409).json({
+            status: "error",
+            mensaje: "Ese correo ya está registrado",
+          });
+        }
+
+        console.error("Error al registrar usuario:", error.message);
+
+        return res.status(500).json({
+          status: "error",
+          mensaje: "No se pudo registrar el usuario",
+        });
+      }
+
+      res.status(201).json({
+        status: "ok",
+        mensaje: "Usuario registrado correctamente",
+      });
+    });
+  } catch (error) {
+    console.error("Error al cifrar contraseña:", error.message);
+
+    res.status(500).json({
+      status: "error",
+      mensaje: "Error al procesar el registro",
+    });
+  }
+});
+
+/*
+|--------------------------------------------------------------------------
+| INICIO DE SESIÓN (Guía 6)
+|--------------------------------------------------------------------------
+| Método: POST
+| Ruta: /login
+|--------------------------------------------------------------------------
+*/
+
+app.post("/login", (req, res) => {
+  const email =
+    typeof req.body.email === "string"
+      ? req.body.email.trim().toLowerCase()
+      : "";
+  const password =
+    typeof req.body.password === "string" ? req.body.password : "";
+
+  if (email.length === 0 || password.length === 0) {
+    return res.status(400).json({
+      status: "error",
+      mensaje: "Ingrese su correo y contraseña",
+    });
+  }
+
+  conexion.query(
+    "SELECT id, nombre, email, password, rol FROM usuarios WHERE email = ?",
+    [email],
+    async (error, filas) => {
+      if (error) {
+        console.error("Error en login:", error.message);
+
+        return res.status(500).json({
+          status: "error",
+          mensaje: "No se pudo iniciar sesión",
+        });
+      }
+
+      // Mismo mensaje para correo o contraseña incorrectos.
+      const credencialesInvalidas = () =>
+        res.status(401).json({
+          status: "error",
+          mensaje: "Correo o contraseña incorrectos",
+        });
+
+      if (filas.length === 0) {
+        return credencialesInvalidas();
+      }
+
+      const usuario = filas[0];
+
+      const passwordValida = await bcrypt.compare(password, usuario.password);
+
+      if (!passwordValida) {
+        return credencialesInvalidas();
+      }
+
+      const token = jwt.sign(
+        { id: usuario.id, nombre: usuario.nombre, rol: usuario.rol },
+        JWT_SECRET,
+        { expiresIn: "8h" }
+      );
+
+      res.status(200).json({
+        status: "ok",
+        mensaje: "Inicio de sesión exitoso",
+        token,
+        usuario: {
+          id: usuario.id,
+          nombre: usuario.nombre,
+          email: usuario.email,
+          rol: usuario.rol,
+        },
+      });
+    }
+  );
+});
+
+/*
+|--------------------------------------------------------------------------
 | RUTA PRINCIPAL
 |--------------------------------------------------------------------------
 | Sirve para comprobar que la API está funcionando.
@@ -196,12 +422,13 @@ app.get("/categorias", (req, res) => {
 |--------------------------------------------------------------------------
 */
 
-app.get("/incidencias", (req, res) => {
+app.get("/incidencias", verificarToken, (req, res) => {
   const sql = `
     SELECT i.id, i.descripcion, i.estado, i.fecha, i.imagen,
-           c.nombre AS categoria
+           c.nombre AS categoria, u.nombre AS usuario
     FROM incidencias i
     JOIN categorias c ON i.categoria_id = c.id
+    LEFT JOIN usuarios u ON i.usuario_id = u.id
     ORDER BY i.fecha DESC
   `;
 
@@ -231,12 +458,13 @@ app.get("/incidencias", (req, res) => {
 |--------------------------------------------------------------------------
 */
 
-app.get("/incidencias/resueltas", (req, res) => {
+app.get("/incidencias/resueltas", verificarToken, (req, res) => {
   const sql = `
     SELECT i.id, i.descripcion, i.estado, i.fecha, i.imagen,
-           c.nombre AS categoria
+           c.nombre AS categoria, u.nombre AS usuario
     FROM incidencias i
     JOIN categorias c ON i.categoria_id = c.id
+    LEFT JOIN usuarios u ON i.usuario_id = u.id
     WHERE i.estado = 'Resuelto'
     ORDER BY i.fecha DESC
   `;
@@ -272,7 +500,7 @@ app.get("/incidencias/resueltas", (req, res) => {
 |--------------------------------------------------------------------------
 */
 
-app.put("/incidencias/:id/estado", (req, res) => {
+app.put("/incidencias/:id/estado", verificarToken, soloAdmin, (req, res) => {
   const incidenciaId = Number(req.params.id);
   const estado = typeof req.body.estado === "string" ? req.body.estado : "";
 
@@ -328,7 +556,7 @@ app.put("/incidencias/:id/estado", (req, res) => {
 |--------------------------------------------------------------------------
 */
 
-app.delete("/incidencias/:id", (req, res) => {
+app.delete("/incidencias/:id", verificarToken, soloAdmin, (req, res) => {
   const incidenciaId = Number(req.params.id);
 
   if (!Number.isInteger(incidenciaId) || incidenciaId <= 0) {
@@ -412,7 +640,7 @@ app.delete("/incidencias/:id", (req, res) => {
 |--------------------------------------------------------------------------
 */
 
-app.get("/estadisticas/categorias", (req, res) => {
+app.get("/estadisticas/categorias", verificarToken, (req, res) => {
   const sql = `
     SELECT c.nombre AS categoria, COUNT(i.id) AS total
     FROM categorias c
@@ -447,7 +675,7 @@ app.get("/estadisticas/categorias", (req, res) => {
 |--------------------------------------------------------------------------
 */
 
-app.get("/estadisticas/estados", (req, res) => {
+app.get("/estadisticas/estados", verificarToken, (req, res) => {
   const sql = `
     SELECT estado, COUNT(id) AS total
     FROM incidencias
@@ -485,7 +713,7 @@ app.get("/estadisticas/estados", (req, res) => {
 |--------------------------------------------------------------------------
 */
 
-app.post("/incidencias", upload.single("imagen"), (req, res) => {
+app.post("/incidencias", verificarToken, upload.single("imagen"), (req, res) => {
   // Obtener la información enviada desde Flutter.
   const { categoria_id, descripcion } = req.body;
 
@@ -563,16 +791,17 @@ app.post("/incidencias", upload.single("imagen"), (req, res) => {
   const guardarIncidencia = () => {
     const sql = `
       INSERT INTO incidencias (
+        usuario_id,
         categoria_id,
         descripcion,
         imagen
       )
-      VALUES (?, ?, ?)
+      VALUES (?, ?, ?, ?)
     `;
 
     conexion.query(
       sql,
-      [categoriaId, descripcionLimpia, nombreImagen],
+      [req.usuario.id, categoriaId, descripcionLimpia, nombreImagen],
       (error, resultado) => {
         if (error) {
           console.error("Error al registrar incidencia:", error.message);
