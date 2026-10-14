@@ -423,16 +423,64 @@ app.get("/categorias", (req, res) => {
 */
 
 app.get("/incidencias", verificarToken, (req, res) => {
-  const sql = `
+  // Filtros opcionales (Guía 7): ?buscar=texto&categoria_id=2&estado=Pendiente
+  const buscar =
+    typeof req.query.buscar === "string" ? req.query.buscar.trim() : "";
+  const categoriaTexto =
+    typeof req.query.categoria_id === "string" ? req.query.categoria_id : "";
+  const estado =
+    typeof req.query.estado === "string" ? req.query.estado : "";
+
+  if (categoriaTexto !== "") {
+    const categoriaId = Number(categoriaTexto);
+
+    if (!Number.isInteger(categoriaId) || categoriaId <= 0) {
+      return res.status(400).json({
+        status: "error",
+        mensaje: "La categoría del filtro no es válida",
+      });
+    }
+  }
+
+  if (estado !== "" && !["Pendiente", "Resuelto"].includes(estado)) {
+    return res.status(400).json({
+      status: "error",
+      mensaje: "El estado del filtro debe ser Pendiente o Resuelto",
+    });
+  }
+
+  let sql = `
     SELECT i.id, i.descripcion, i.estado, i.fecha, i.imagen,
            c.nombre AS categoria, u.nombre AS usuario
     FROM incidencias i
     JOIN categorias c ON i.categoria_id = c.id
     LEFT JOIN usuarios u ON i.usuario_id = u.id
-    ORDER BY i.fecha DESC
+    WHERE 1 = 1
   `;
 
-  conexion.query(sql, (error, resultados) => {
+  const parametros = [];
+
+  if (buscar.length > 0) {
+    // Escapamos \, % y _ para que se busquen como texto normal.
+    const textoSeguro = buscar.slice(0, 100).replace(/[\\%_]/g, "\\$&");
+
+    sql += " AND i.descripcion LIKE ?";
+    parametros.push(`%${textoSeguro}%`);
+  }
+
+  if (categoriaTexto !== "") {
+    sql += " AND i.categoria_id = ?";
+    parametros.push(Number(categoriaTexto));
+  }
+
+  if (estado !== "") {
+    sql += " AND i.estado = ?";
+    parametros.push(estado);
+  }
+
+  sql += " ORDER BY i.fecha DESC";
+
+  conexion.query(sql, parametros, (error, resultados) => {
     if (error) {
       console.error("Error al obtener incidencias:", error.message);
 
