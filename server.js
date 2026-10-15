@@ -330,6 +330,47 @@ app.post("/login", (req, res) => {
 
 /*
 |--------------------------------------------------------------------------
+| PERFIL DEL USUARIO AUTENTICADO (Guía 8)
+|--------------------------------------------------------------------------
+| Método: GET
+| Ruta: /perfil
+| Requiere el encabezado Authorization: Bearer <token>
+|--------------------------------------------------------------------------
+*/
+
+app.get("/perfil", verificarToken, (req, res) => {
+  const sql = `
+    SELECT id, nombre, email, rol, fecha_registro
+    FROM usuarios
+    WHERE id = ?
+  `;
+
+  conexion.query(sql, [req.usuario.id], (error, filas) => {
+    if (error) {
+      console.error("Error al obtener perfil:", error.message);
+
+      return res.status(500).json({
+        status: "error",
+        mensaje: "No se pudo obtener el perfil",
+      });
+    }
+
+    if (filas.length === 0) {
+      return res.status(404).json({
+        status: "error",
+        mensaje: "Usuario no encontrado",
+      });
+    }
+
+    res.status(200).json({
+      status: "ok",
+      usuario: filas[0],
+    });
+  });
+});
+
+/*
+|--------------------------------------------------------------------------
 | RUTA PRINCIPAL
 |--------------------------------------------------------------------------
 | Sirve para comprobar que la API está funcionando.
